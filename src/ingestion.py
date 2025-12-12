@@ -1,3 +1,4 @@
+import zipfile
 import pandas as pd
 import glob
 import os
@@ -34,33 +35,58 @@ class FileIngestor(Ingestor):
             raise e
 
     @staticmethod
-    def read_folder(folder_path: str, file_pattern: str = "*.csv", **kwargs) -> pd.DataFrame:
-        """Reads multiple files from a folder and concatenates them."""
-        all_files = glob.glob(os.path.join(folder_path, file_pattern))
-        if not all_files:
-            logger.warning(f"No files found in {folder_path} with pattern {file_pattern}")
-            return pd.DataFrame()
+    def extract_zip(zip_path: str, extract_to: str) -> list:
+        """Extracts a zip file and returns list of extracted files."""
+        extracted_files = []
+        try:
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(extract_to)
+                extracted_files = [os.path.join(extract_to, f) for f in zip_ref.namelist()]
+            logger.info(f"Extracted {zip_path} to {extract_to}")
+        except Exception as e:
+            logger.error(f"Failed to unzip {zip_path}: {e}")
+        return extracted_files
+
+    @staticmethod
+    def read_folder(folder_path: str, file_pattern: str = "*", recursive: bool = False, **kwargs) -> pd.DataFrame:
+        """
+        Reads files from a folder. 
+        Auto-handles ZIP extraction if zip files are found.
+        """
+        # 1. Handle ZIPs first
+        zip_files = glob.glob(os.path.join(folder_path, "*.zip"))
+        if zip_files:
+            logger.info(f"Found {len(zip_files)} zip files. Extracting...")
+            for zf in zip_files:
+                FileIngestor.extract_zip(zf, folder_path)
+        
+        # 2. Read contents (CSV/Excel)
+        # Supports CSV and XLSX
+        search_path = os.path.join(folder_path, file_pattern)
+        all_files = glob.glob(search_path, recursive=recursive)
         
         df_list = []
         for file in all_files:
+            # Skip the zip files themselves and temp files
+            if file.endswith('.zip') or file.startswith('~$'):
+                continue
+                
             try:
-                # Simple logic to distinguish csv/excel based on extension if needed, 
-                # but assumes pattern matches read function.
                 if file.endswith('.csv'):
                     df = pd.read_csv(file, **kwargs)
-                elif file.endswith('.xlsx'):
+                elif file.endswith('.xlsx') or file.endswith('.xls'):
                     df = pd.read_excel(file, **kwargs)
                 else:
-                    logger.warning(f"Unsupported file type for auto-read: {file}")
                     continue
-                df['source_file'] = os.path.basename(file) # Track source
+                
+                df['source_file'] = os.path.basename(file)
                 df_list.append(df)
             except Exception as e:
                 logger.error(f"Failed to read {file}: {e}")
         
         if df_list:
             final_df = pd.concat(df_list, ignore_index=True)
-            logger.info(f"Ingested {len(all_files)} files from {folder_path}. Total Shape: {final_df.shape}")
+            logger.info(f"Ingested {len(df_list)} files from {folder_path}. Total Shape: {final_df.shape}")
             return final_df
         else:
             return pd.DataFrame()

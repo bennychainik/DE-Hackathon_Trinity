@@ -1,5 +1,6 @@
 # -- Data Processing --
 pandas
+openpyxl
 polars
 pyspark
 duckdb

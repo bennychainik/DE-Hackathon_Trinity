@@ -61,3 +61,57 @@ class Transformer:
         agg_dict example: {'salary': 'sum', 'id': 'count'}
         """
         return df.groupby(group_cols).agg(agg_dict).reset_index()
+
+    @staticmethod
+    def split_dataframe(df: pd.DataFrame, columns: list, drop_duplicates: bool = True) -> pd.DataFrame:
+        """
+        Safely selects columns from DataFrame if they exist.
+        Useful for splitting massive flat files into Dims/Facts.
+        """
+        existing_cols = [c for c in columns if c in df.columns]
+        missing_cols = list(set(columns) - set(existing_cols))
+        
+        if missing_cols:
+            logger.warning(f"Columns missing for split: {missing_cols}")
+        
+        subset = df[existing_cols]
+        if drop_duplicates:
+            return subset.drop_duplicates()
+        return subset
+
+    @staticmethod
+    def calculate_late_fees(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Calculates Late Fees based on user rules:
+        Duration = Actual_Paid - Next_Due
+        Rules: 5 months -> 2.5%, 6 months -> 3%
+        """
+        try:
+            req_cols = ['actual_premium_paid_dt', 'next_premium_dt', 'premium_amt']
+            if not all(col in df.columns for col in req_cols):
+                logger.warning(f"Missing columns for Late Fee Calc. Need: {req_cols}")
+                return df
+
+            # 1. Calc Duration (Days -> Months)
+            # User guideline: 178 days approx 6 months. Using /30 and rounding.
+            df['late_duration_days'] = (df['actual_premium_paid_dt'] - df['next_premium_dt']).dt.days
+            df['late_duration_months'] = (df['late_duration_days'] / 30).round().fillna(0).astype(int)
+
+            # 2. Determine %
+            # Generalized Rule: 0.5% (0.005) penalty per month delayed.
+            # (Fits user examples: 5mo -> 2.5%, 6mo -> 3%)
+            def get_penalty(months):
+                if months <= 0: return 0.0
+                return months * 0.005
+
+            df['late_fee_pct'] = df['late_duration_months'].apply(get_penalty)
+
+            # 3. Calc Amounts
+            df['late_fee_amount'] = df['premium_amt'] * df['late_fee_pct']
+            df['total_amount_to_pay'] = df['premium_amt'] + df['late_fee_amount']
+
+            logger.info("Late Fee Calculation Applied.")
+            return df
+        except Exception as e:
+            logger.error(f"Error in Late Fee Calc: {e}")
+            return df

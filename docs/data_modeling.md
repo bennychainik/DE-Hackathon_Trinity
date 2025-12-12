@@ -1,44 +1,38 @@
 # Data Modeling Strategy
 
-## Architecture: Star Schema
-We utilize a **Star Schema** approach for the Data Warehouse to optimize for:
-1.  **Read Performance**: Simplified joins for reporting.
-2.  **Scalability**: Easy to add new dimensions.
-3.  **Simplicity**: Queries are intuitive for analytics.
+## Architecture: Hybrid (Star + Snowflake)
+We utilize a **Hybrid Schema** to balance performance with data quality. 
 
-## Entity Relationship Diagram (ERD) Concept
+### Why Hybrid?
+The source data contains 26 columns with distinct hierarchies. We apply **Snowflaking** (Normalization) specifically to the **Policy** dimension to separate the **Contract** (Policy Instance) from the **Product** (Policy Type).
+
+### Entity Relationship Diagram (ERD)
 
 ```mermaid
 erDiagram
-    FACT_TRANSACTIONS }|--|| DIM_CUSTOMER : "belongs to"
-    FACT_TRANSACTIONS }|--|| DIM_POLICY : "relates to"
-    FACT_TRANSACTIONS }|--|| DIM_ADDRESS : "located in"
+    FACT_TRANSACTIONS }|..|| DIM_CUSTOMER : "links to"
+    FACT_TRANSACTIONS }|..|| DIM_ADDRESS : "located at"
+    FACT_TRANSACTIONS }|..|| DIM_POLICY : "pays for"
+    
+    %% Snowflake Relationship
+    DIM_POLICY }|..|| DIM_POLICY_TYPE : "defined by"
 
-    DIM_CUSTOMER {
-        int customer_sk PK
-        string customer_id UK
-        string name
-        string segment
+    DIM_POLICY_TYPE {
+        string policy_type_id PK
+        string type_name
+        string description
     }
 
     DIM_POLICY {
         int policy_sk PK
         string policy_id UK
-        string type
-        date start_date
-    }
-
-    FACT_TRANSACTIONS {
-        int txn_id PK
-        int customer_sk FK
-        int policy_sk FK
-        decimal amount
-        date txn_date
+        string policy_type_id FK
+        decimal premium_amt
+        string term
     }
 ```
 
-## Best Practices
-- **Surrogate Keys (SK)**: Always use Auto-Increment Integer SKs for joins. Never join on string business IDs if possible.
-- **SCD Strategy**:
-    - **Dimensions**: Type 1 (Overwrite) for corrections, Type 2 (History) for status changes (e.g., Policy Status).
-    - **Facts**: Transactional (Append-only).
+### Benefits for Hackathon
+1.  **Redundancy Reduction**: `Policy_Type_Desc` is not repeated for every customer.
+2.  **Cleaner Updates**: If a Policy Type description changes, we update ONE row in `dim_policy_type`.
+3.  **Logical Separation**: Differentiates between what the customer *owns* (Contract) and what we *sell* (Product).

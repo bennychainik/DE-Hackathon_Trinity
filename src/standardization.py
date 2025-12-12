@@ -18,7 +18,11 @@ class Standardizer:
         """Renames all columns to snake_case."""
         new_cols = {col: Standardizer.to_snake_case(col) for col in df.columns}
         df = df.rename(columns=new_cols)
-        logger.info("Standardized column names to snake_case.")
+        
+        # Remove duplicate columns if any (keeping first)
+        df = df.loc[:, ~df.columns.duplicated()]
+        
+        logger.info(f"Standardized column names. Shape: {df.shape}")
         return df
 
     @staticmethod
