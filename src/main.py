@@ -53,21 +53,7 @@ def run_pipeline(source_folder='data', file_pattern='*'):
     logger.info("Step 4: Transformation & Cleaning")
 
     # 4.1 Construct Customer Name
-    # Source has Title, First, Middle, Last. Target needs 'customer_name'.
-    # Handle NaNs to avoid "Nan" string
-    name_cols = ['customer_title', 'customer_first_name', 'customer_middle_name', 'customer_last_name']
-    for c in name_cols:
-        if c in df.columns:
-            df[c] = df[c].fillna('').astype(str).replace('nan', '')
-    
-    # Combine if parts exist
-    if 'customer_first_name' in df.columns:
-         df['customer_name'] = (
-            df['customer_title'] + " " + 
-            df['customer_first_name'] + " " + 
-            df['customer_middle_name'] + " " + 
-            df['customer_last_name']
-        ).str.replace(r'\s+', ' ', regex=True).str.strip()
+    df = Transformer.construct_customer_name(df)
     
     # 4.2 Rename/Map Columns
     rename_map = {
@@ -179,14 +165,80 @@ def run_pipeline(source_folder='data', file_pattern='*'):
     dim_policy['created_at'] = datetime.now()
     loader.load_to_db(dim_policy, 'dim_policy', if_exists='append')
     
-    # 7.3 Dim Customer
-    dim_cust = stg_cust[['customer_id', 'customer_name', 'customer_segment', 'marital_status', 'gender', 'dob', 'effective_start_dt', 'effective_end_dt', 'region']].drop_duplicates('customer_id')
-    dim_cust['current_flag'] = 1
-    dim_cust['created_at'] = datetime.now()
-    # DDL also has 'eff_start_dt', 'eff_end_dt' ?
-    # DDL: effective_start_dt -> eff_start_dt, effective_end_dt -> eff_end_dt
-    dim_cust = dim_cust.rename(columns={'effective_start_dt': 'eff_start_dt', 'effective_end_dt': 'eff_end_dt'})
-    loader.load_to_db(dim_cust, 'dim_customer', if_exists='append')
+    # 7.3 Dim Customer (SCD Type 2)
+    # ---------------------------------------------
+    # 1. Prepare Incoming (New) Data
+    dim_cust_new = stg_cust[['customer_id', 'customer_name', 'customer_segment', 'marital_status', 'gender', 'region']].drop_duplicates('customer_id')
+    # Use generic names for dates if not present
+    
+    # 2. Fetch Existing (Current) Data from DB
+    sql_ingestor = FileIngestor() # We need SQL capabilities. Using 'src/ingestion.py' SQLIngestor helper if available or creating engine directly.
+    # Actually Ingestion module has SQLIngestor class? Let's check imports.
+    # We imported FileIngestor. We need SQLIngestor.
+    # Let's import generic utils engine or use Loader's engine?
+    from src.ingestion import SQLIngestor
+    
+    try:
+        sql_reader = SQLIngestor(db_type='mysql')
+        # We only compare against CURRENT records
+        existing_cust = sql_reader.read_query("SELECT customer_sk, customer_id, customer_name, customer_segment, marital_status, region FROM dim_customer WHERE current_flag = 1")
+    except Exception as e:
+        logger.warning(f"Could not fetch existing DimCustomer (First Run?): {e}")
+        existing_cust = pd.DataFrame()
+
+    # 3. Apply SCD2 Logic
+    # Compare columns: name, segment, marital, region
+    compare_cols = ['customer_name', 'customer_segment', 'marital_status', 'region']
+    
+    if existing_cust.empty:
+        # First Load -> All are new inserts
+        to_insert = dim_cust_new.copy()
+        to_insert['current_flag'] = 1
+        to_insert['eff_start_dt'] = datetime.now().date()
+        to_insert['eff_end_dt'] = '9999-12-31'
+        to_update = pd.DataFrame()
+    else:
+        to_insert, to_update = Transformer.scd_type_2(
+            new_df=dim_cust_new,
+            existing_df=existing_cust,
+            join_keys=['customer_id'],
+            compare_cols=compare_cols
+        )
+
+    # 4. Perform Updates (Expire Old) inside DB
+    if not to_update.empty:
+        # We need to run SQL UPDATE statements. 
+        # Loader generic 'load_to_db' is usually INSERT only.
+        # We'll do a custom execute for updates.
+        logger.info(f"Expiring {len(to_update)} old customer records...")
+        from sqlalchemy import text
+        with loader.engine.connect() as conn:
+            for index, row in to_update.iterrows():
+                # Update specific SK
+                stmt = text(f"UPDATE dim_customer SET current_flag = 0, eff_end_dt = :end_dt WHERE customer_sk = :sk")
+                conn.execute(stmt, {'end_dt': row['eff_end_dt'], 'sk': row['customer_sk']})
+                conn.commit()
+
+    # 5. Perform Inserts (New Rows)
+    if not to_insert.empty:
+        # Ensure columns match DDL
+        # DDL: customer_id, customer_name, customer_segment, marital_status, gender, dob, eff_start_dt, eff_end_dt, current_flag, region, created_at
+        # We are missing DOB in the comparison df above, we should merge it back from stg_cust if needed or include it earlier.
+        # Simplification: We merge DOB back from stg_cust based on ID
+        dob_lookup = stg_cust[['customer_id', 'dob']].drop_duplicates('customer_id')
+        to_insert = pd.merge(to_insert, dob_lookup, on='customer_id', how='left')
+        
+        to_insert['created_at'] = datetime.now()
+        # Ensure order/subset
+        cols_to_load = ['customer_id', 'customer_name', 'customer_segment', 'marital_status', 'gender', 'dob', 'eff_start_dt', 'eff_end_dt', 'current_flag', 'region', 'created_at']
+        # Handle columns that might not exist in to_insert if new_df didn't have them (e.g. gender)
+        for c in cols_to_load:
+            if c not in to_insert.columns:
+                to_insert[c] = None # or map from source
+                
+        # Fix Gender: gender is in dim_cust_new? Yes.
+        
+        loader.load_to_db(to_insert[cols_to_load], 'dim_customer', if_exists='append')
 
     # 7.4 Dim Address
     dim_addr = stg_addr[['customer_id', 'country', 'region', 'state_province', 'city', 'postal_code']].drop_duplicates(['customer_id', 'postal_code'])
