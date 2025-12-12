@@ -29,32 +29,34 @@ We designed a modular ETL system that ingests multi-region insurance data from C
 
 ```mermaid
 graph LR
+
     subgraph Sources
         CSV[Regional CSV Files]
     end
 
-    subgraph "ETL Application (Python)"
+    subgraph ETL_Application_Python
         Ingest[Ingestion Layer]
         Validate[Validation Layer]
         Clean[Standardization]
-        Transform[Transformation Logic (SCD2)]
+        Transform[Transformation Logic - SCD2]
     end
 
-    subgraph "Data Warehouse (MySQL)"
+    subgraph Data_Warehouse_MySQL
         Staging[(Staging Area)]
-        Dims[[Dimension Tables]]
-        Facts[[Fact Tables]]
+        Dims[Dimension Tables]
+        Facts[Fact Tables]
     end
 
-    subgraph "Reporting"
-        SQL[SQL Analytical Queries]
-        BI[BI/Dashboard]
+    subgraph Reporting
+        SQLQueries[SQL Analytical Queries]
+        BIReports[BI Dashboards]
     end
 
     CSV --> Ingest --> Validate --> Clean --> Transform
-    Transform --> Staging --> Dims --> SQL
-    Transform --> Staging --> Facts --> SQL
-    SQL --> BI
+    Transform --> Staging --> Dims --> SQLQueries
+    Transform --> Staging --> Facts --> SQLQueries
+    SQLQueries --> BIReports
+
 ```
 
 ---
