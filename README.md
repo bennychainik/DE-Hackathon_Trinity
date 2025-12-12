@@ -1,112 +1,174 @@
-# 🚀 Data Engineering Hackathon Repository
+# 🚀 Sprint-0: Design Phase – Data Engineering Hackathon
 
-![Status](https://img.shields.io/badge/Status-Sprint%200-blue)
-![Python](https://img.shields.io/badge/Python-3.9%2B-green)
-![Database](https://img.shields.io/badge/Database-MySQL-orange)
+## 📌 1. Objective
 
-## 📌 Project Overview
-This repository serves as the **Data Engineering Backbone** for our hackathon solution. It contains reusable pipelines for Ingestion, Validation, Transformation, and Modeling.
+This sprint focuses on architecting the complete data engineering solution before development begins.
 
-**Objective**: Build a scalable, fault-tolerant Data Warehouse to answer complex business queries under 8 hours.
+Our purpose is to design:
+- The ETL Pipeline
+- The Data Warehouse schema (Star Schema)
+- The SCD-Type 2 strategy
+- The Data Flow
+- Clear team roles
+- Base folder/project structure
+
+This ensures a stable foundation for implementation in Sprint-1.
 
 ---
 
-## 🏗 Architecture
-We follow a **Modular ETL** approach feeding into a **Star Schema** Data Warehouse.
+## 🏗 2. High-Level Architecture
+
+We designed a modular ETL system that ingests multi-region insurance data from CSV files, validates, standardizes, transforms, and loads it into a MySQL-based Data Warehouse.
+
+### End-to-end Flow
+`RAW FILES` → `INGESTION` → `VALIDATION` → `STANDARDIZATION` → `TRANSFORMATION (SCD-2)` → `STAGING TABLES` → `STAR SCHEMA (DIMENSIONS + FACT)` → `REPORTING SQL QUERIES`
+
+---
+
+## 📐 3. Architecture Diagram
 
 ```mermaid
 graph LR
+
     subgraph Sources
-        CSV[CSV Files]
-        API[External APIs]
-        DB[Source DB]
+        CSV[Regional CSV Files]
     end
 
-    subgraph "ETL Application (Python)"
+    subgraph ETL_Application_Python
         Ingest[Ingestion Layer]
         Validate[Validation Layer]
         Clean[Standardization]
-        Transform[Transformation Logic]
+        Transform[Transformation Logic - SCD2]
     end
 
-    subgraph "Data Warehouse (MySQL)"
+    subgraph Data_Warehouse_MySQL
         Staging[(Staging Area)]
-        DWH[(Star Schema)]
-        Facts[Fact Tables]
         Dims[Dimension Tables]
+        Facts[Fact Tables]
     end
 
-    subgraph "Visualisation"
-        SQL[SQL Reports]
-        BI[BI Tool / Dashboards]
+    subgraph Reporting
+        SQLQueries[SQL Analytical Queries]
+        BIReports[BI Dashboards]
     end
 
-    Sources --> Ingest
-    Ingest --> Validate
-    Validate --> Clean
-    Clean --> Transform
-    Transform --> Staging
-    Staging --> DWH
-    DWH -.-> Facts
-    DWH -.-> Dims
-    Facts --> SQL
-    Dims --> SQL
+    CSV --> Ingest --> Validate --> Clean --> Transform
+    Transform --> Staging --> Dims --> SQLQueries
+    Transform --> Staging --> Facts --> SQLQueries
+    SQLQueries --> BIReports
+
 ```
 
-### Why Star Schema?
-We chose **Star Schema** over OBT (One Big Table) because:
-1.  **Engineering Maturity**: Demonstrates understanding of Dimensional Modeling (Facts vs Dimensions).
-2.  **Flexibility**: Allows SCD Type 2 tracking (history of changes) for Dimensions like Customer/Policy.
-3.  **Efficiency**: Reduces redundancy (normalization) while maintaining high query performance.
+---
+
+## ⭐ 4. Key Design Decisions
+
+### 4.1 Star Schema Chosen Over Snowflake
+We selected Star Schema because it is:
+- Faster in MySQL (fewer joins)
+- Easier to implement in an 8-hour hackathon
+- Ideal for analytical queries
+- Supports SCD-2 cleanly
+- Simpler and more intuitive for BI tools
+
+*Snowflake Schema adds unnecessary complexity for this dataset.*
+
+### 4.2 SCD-Type 2 Strategy
+We apply SCD-2 on:
+- **Customer Dimension** → Marital status change history
+- **Policy Dimension** → Policy type & policy detail changes
+
+Each record includes:
+- `effective_start_dt`
+- `effective_end_dt`
+- `is_current`
+
+This allows historical tracking for business requirements (e.g., “Who changed policy type?”).
 
 ---
 
-## 🛠 Setup Instructions (Sprint 0)
+## 🧱 5. Data Warehouse Schema
 
-1.  **Clone the Repo**:
-    ```bash
-    git clone https://github.com/bennychainik/DE-Hackathon_Trinity.git
-    cd DE-Hackathon_Trinity
-    ```
+### 5.1 Dimension Tables
+| Dimension | Purpose |
+| :--- | :--- |
+| `dim_customer` | Customer profile + marital status history (SCD-2) |
+| `dim_policy` | Policy details + policy type history (SCD-2) |
+| `dim_policy_type` | Master list of policy categories |
+| `dim_address` | Region-based address details |
+| `dim_date` | Calendar dimension for time-based analysis |
 
-2.  **Create Environment**:
-    ```bash
-    python -m venv venv
-    # Windows
-    .\venv\Scripts\Activate
-    # Mac/Linux
-    source venv/bin/activate
-    ```
-
-3.  **Install Dependencies**:
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-4.  **Verify Setup**:
-    ```bash
-    python verify_setup.py
-    ```
+### 5.2 Fact Table
+| Fact Table | Purpose |
+| :--- | :--- |
+| `fact_transactions` | Premiums, installments, total amount, late fees, foreign keys to all dimensions |
 
 ---
 
-## 📁 Repository Structure
-| Folder | Purpose |
-|:-------|:--------|
-| `src/ingestion.py` | Universal readers for CSV, Excel, SQL. |
-| `src/validation.py` | Data Quality checks (Nulls, Integrity). |
-| `src/transformation.py` | Joins, Aggregations, SCD logic. |
-| `sql/ddl/` | CREATE TABLE scripts for DWH. |
-| `sql/reporting/` | SQL Analysis templates (Window funcs, CTEs). |
-| `docs/` | Architecture, Governance, and Data Diagrams. |
+## 🔁 6. ETL Pipeline Design
+
+### 6.1 Ingestion Layer
+- Reads CSV files from 4 regions (East, West, South, Central)
+- Loads raw data into MySQL staging tables
+- Ensures traceability (no transformation yet)
+
+### 6.2 Validation Layer
+Performs DQ checks:
+- Null checks
+- Date validation
+- Duplicate detection
+- Schema consistency
+
+### 6.3 Standardization Layer
+Cleans and normalizes:
+- Region names
+- Policy terms (Monthly/Quarterly/Yearly)
+- Gender, marital status
+- Date formats
+
+Produces a unified dataset.
+
+### 6.4 Transformation Layer
+Implements:
+- Business rules
+- SCD-2 logic
+- Late fee calculation
+- Installment calculation
+- Dimension & Fact loading logic
 
 ---
 
-## 👥 Team Roles
-- **@IngestionLead**: Data Loading, Cleaning, Validation.
-- **@ModelingLead**: DWH Design, DDLs, Transformation Logic.
-- **@ReportingLead**: SQL Queries, Documentation, Final Presentation.
+## 🗂 7. Repository Structure (Sprint-0)
+
+```
+DE-Hackathon_Trinity/
+│
+├── src/
+│   ├── ingestion.py
+│   ├── validation.py
+│   ├── transformation.py
+│   └── utils/
+│
+├── sql/
+│   ├── ddl/           → MySQL DWH table creation scripts
+│   └── reporting/     → SQL queries for tasks (b–g)
+│
+├── docs/
+│   ├── architecture.md
+│   ├── data_model.png
+│   └── scd2_design.md
+│
+├── logs/
+│
+└── README.md   (this file)
+```
 
 ---
 
-*Generated by DE-Prep-Assistant | Ready for Hackathon*
+## 👥 8. Team Roles
+
+| Member | Role | Responsibilities |
+| :--- | :--- | :--- |
+| **Ingestion Lead** | ETL Input | File ingestion, staging load |
+| **Modeling Lead** | DWH Setup | Star schema, SCD-2, transformations |
+| **Reporting Lead** | Analytics | SQL queries, documentation, insights |
