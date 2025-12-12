@@ -4,10 +4,12 @@ import os
 # Connect to Server (no DB)
 user = os.getenv('DB_USER', 'root')
 password = os.getenv('DB_PASSWORD', 'password')
+from urllib.parse import quote_plus
 host = os.getenv('DB_HOST', 'localhost')
 port = os.getenv('DB_PORT', '3306')
 
-conn_str = f"mysql+mysqlconnector://{user}:{password}@{host}:{port}"
+encoded_password = quote_plus(password)
+conn_str = f"mysql+mysqlconnector://{user}:{encoded_password}@{host}:{port}"
 engine = create_engine(conn_str, isolation_level="AUTOCOMMIT")
 
 print("Initializing Database...")

@@ -21,9 +21,9 @@ CREATE TABLE IF NOT EXISTS stg_customers (
 );
 
 CREATE TABLE IF NOT EXISTS stg_policy (
-  policy_id INT,
+  policy_id VARCHAR(50),
   policy_name VARCHAR(255),
-  policy_type_id INT,
+  policy_type_id VARCHAR(50),
   policy_type VARCHAR(100),
   policy_type_desc TEXT,
   policy_term VARCHAR(50),
@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS stg_address (
 
 CREATE TABLE IF NOT EXISTS stg_transactions (
   txn_id INT AUTO_INCREMENT PRIMARY KEY,
-  policy_id INT,
+  policy_id VARCHAR(50),
   customer_id INT,
   txn_date DATE,
   premium_amount DECIMAL(18,2),
@@ -88,16 +88,16 @@ CREATE TABLE IF NOT EXISTS dim_customer (
 );
 
 CREATE TABLE IF NOT EXISTS dim_policy_type (
-  policy_type_id INT PRIMARY KEY,
+  policy_type_id VARCHAR(50) PRIMARY KEY,
   policy_type_name VARCHAR(100),
   policy_type_desc TEXT
 );
 
 CREATE TABLE IF NOT EXISTS dim_policy (
   policy_sk INT AUTO_INCREMENT PRIMARY KEY,
-  policy_id INT,
+  policy_id VARCHAR(50),
   policy_name VARCHAR(255),
-  policy_type_id INT,
+  policy_type_id VARCHAR(50),
   policy_type VARCHAR(100),
   policy_term VARCHAR(50),
   policy_start_dt DATE,

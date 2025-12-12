@@ -64,6 +64,14 @@ def run_pipeline(source_folder='data', file_pattern='*'):
     }
     df = df.rename(columns=rename_map)
 
+    # 4.2.1 Enforce String Types for IDs (Prevent Duplicates in MySQL due to Mixed Types)
+    if 'policy_id' in df.columns:
+        df['policy_id'] = df['policy_id'].fillna('').astype(str).str.strip()
+    if 'policy_type_id' in df.columns:
+        df['policy_type_id'] = df['policy_type_id'].fillna('').astype(str).str.strip()
+    if 'customer_id' in df.columns:
+        df['customer_id'] = df['customer_id'].fillna('').astype(str).str.strip() # Ensure consistency
+
     # 4.3 Clean Strings
     df = Standardizer.trim_strings(df)
     
@@ -168,7 +176,7 @@ def run_pipeline(source_folder='data', file_pattern='*'):
     # 7.3 Dim Customer (SCD Type 2)
     # ---------------------------------------------
     # 1. Prepare Incoming (New) Data
-    dim_cust_new = stg_cust[['customer_id', 'customer_name', 'customer_segment', 'marital_status', 'gender', 'region']].drop_duplicates('customer_id')
+    dim_cust_new = stg_cust[['customer_id', 'customer_name', 'customer_segment', 'marital_status', 'gender', 'region', 'effective_start_dt']].drop_duplicates('customer_id')
     # Use generic names for dates if not present
     
     # 2. Fetch Existing (Current) Data from DB
@@ -194,7 +202,12 @@ def run_pipeline(source_folder='data', file_pattern='*'):
         # First Load -> All are new inserts
         to_insert = dim_cust_new.copy()
         to_insert['current_flag'] = 1
-        to_insert['eff_start_dt'] = datetime.now().date()
+        # Use provided start date if available, else distinct past date for initial load
+        if 'effective_start_dt' in to_insert.columns:
+            to_insert['eff_start_dt'] = pd.to_datetime(to_insert['effective_start_dt']).fillna(datetime(1900, 1, 1).date())
+        else:
+            to_insert['eff_start_dt'] = datetime(1900, 1, 1).date()
+            
         to_insert['eff_end_dt'] = '9999-12-31'
         to_update = pd.DataFrame()
     else:
@@ -221,23 +234,20 @@ def run_pipeline(source_folder='data', file_pattern='*'):
 
     # 5. Perform Inserts (New Rows)
     if not to_insert.empty:
-        # Ensure columns match DDL
-        # DDL: customer_id, customer_name, customer_segment, marital_status, gender, dob, eff_start_dt, eff_end_dt, current_flag, region, created_at
-        # We are missing DOB in the comparison df above, we should merge it back from stg_cust if needed or include it earlier.
-        # Simplification: We merge DOB back from stg_cust based on ID
+        # Merge DOB and other missing static fields back from Staging
         dob_lookup = stg_cust[['customer_id', 'dob']].drop_duplicates('customer_id')
         to_insert = pd.merge(to_insert, dob_lookup, on='customer_id', how='left')
         
         to_insert['created_at'] = datetime.now()
         # Ensure order/subset
         cols_to_load = ['customer_id', 'customer_name', 'customer_segment', 'marital_status', 'gender', 'dob', 'eff_start_dt', 'eff_end_dt', 'current_flag', 'region', 'created_at']
-        # Handle columns that might not exist in to_insert if new_df didn't have them (e.g. gender)
+        
+        # Handle columns that might not exist in to_insert
         for c in cols_to_load:
             if c not in to_insert.columns:
-                to_insert[c] = None # or map from source
-                
-        # Fix Gender: gender is in dim_cust_new? Yes.
+                to_insert[c] = None 
         
+        # Loader handles column mapping if strictly defined, but ensuring subset is good practice to avoid errors.
         loader.load_to_db(to_insert[cols_to_load], 'dim_customer', if_exists='append')
 
     # 7.4 Dim Address
@@ -246,52 +256,142 @@ def run_pipeline(source_folder='data', file_pattern='*'):
     loader.load_to_db(dim_addr, 'dim_address', if_exists='append')
     
     # 7.5 Dim Late Fee (New Hybrid Dim)
-    # We generate rules dynamically or static 0-60 months
-    # Rule: 0.5% per month. provided in UseCase excel or formula.
-    # We'll generate a reference dataframe for 0-60 months.
+    # Generate reference table 0-60 months
     fee_range = range(0, 61)
     dim_late_fee = pd.DataFrame({'duration_months': fee_range})
     dim_late_fee['penalty_percent'] = dim_late_fee['duration_months'] * 0.005
     dim_late_fee['description'] = dim_late_fee['duration_months'].astype(str) + " Months Delay"
     dim_late_fee['created_at'] = datetime.now()
     
-    loader.load_to_db(dim_late_fee, 'dim_late_fee', if_exists='append') # Warning: Append might duplicate if run multiple times. Ideally upsert or replace (lookup). 
-    # For Hackathon: 'append' with unique constraint failure is noisy. 
-    # Better: 'replace' if it's a reference table, OR check existence.
-    # We'll use simple append and ignore errors (Loader handles basic, but usually we'd truncate/re-seed or lookup).
-    # Let's try to fetch SKs back for Fact linkage.
-    
-    # 7.6 Fact Policy Txn
-    # Need to link late_fee_sk.
-    # 1. Join df with dim_late_fee on 'late_duration_months'
-    # Since we just created dim_late_fee DF, we can join on that (assuming SKs are auto-inc in DB, we don't have them here unless we fetch).
-    # Hack: We know the logic. If late_fee_sk is Auto-Inc and we cleared table or it maps 1:1, we can't easily guess.
-    # Correct Way: Fetch dim_late_fee from DB.
+    # Check if exists to avoid dupes (simple hack: try-except or just append if table empty)
+    # For now, we append. If PK exists, it fails, which is fine for repeated runs (it stays populated).
+    # To be cleaner, we can catch the error or check count.
     try:
-        from src.ingestion import SQLIngestor
-        sql_reader = SQLIngestor(db_type='mysql')
-        ref_late_fee = sql_reader.read_query("SELECT late_fee_sk, duration_months FROM dim_late_fee")
-        
-        # If empty (first run), we rely on the df we just made, but we need SKs. 
-        # Since we use 'append', we can't guess SKs. 
-        # Quick Hack for Hackathon: Use 'duration_months' as the SK? NO.
-        # Fallback: If ref_late_fee is available, merge.
-        if not ref_late_fee.empty:
-             df = pd.merge(df, ref_late_fee, left_on='late_duration_months', right_on='duration_months', how='left')
-        else:
-             df['late_fee_sk'] = None # Should not happen if load worked
+        loader.load_to_db(dim_late_fee, 'dim_late_fee', if_exists='append') 
     except Exception:
-         df['late_fee_sk'] = None
+        logger.warning("Dim Late Fee load failed (likely duplicates), skipping.")
 
-    # Prepare Fact
-    fact_tx = df[['customer_id', 'policy_id', 'late_fee_sk', 'txn_date', 'premium_amt', 'premium_paid_tilldate', 'total_policy_amt', 'late_fee_amount', 'region', 'ingestion_date']]
-    fact_tx = fact_tx.rename(columns={'late_fee_amount': 'late_fee'})
-    loader.load_to_db(fact_tx, 'fact_policy_txn', if_exists='append')
+    # 7.6 Fact Policy Txn with Surrogate Keys (SK) Lookup
+    # ---------------------------------------------------
+    from src.ingestion import SQLIngestor
+    sql_reader = SQLIngestor(db_type='mysql')
+
+    # A. Fetch Dimension Maps (ID -> SK)
+    try:
+        # Customer Map (Active records only for now? Or join on date? User schema is SCD2)
+        # For simplicity in logic: Join on Customer ID and Region/Date? 
+        # Ideally Fact joins on specific version. Here we just take 'current' or join on ID + Date range.
+        # Strict SCD2 linkage requires: Fact.TxnDate BETWEEN Dim.Start AND Dim.End
+        # We will fetch ALL history and do a merge_asof or careful merge.
+        # Simplified for Hackathon: Fetch All, Merge on ID, Filter by Date.
+        
+        # Customer SK Map
+        # Fetch: customer_sk, customer_id, eff_start_dt, eff_end_dt
+        map_cust = sql_reader.read_query("SELECT customer_sk, customer_id, eff_start_dt, eff_end_dt FROM dim_customer")
+        
+        # Policy SK Map (Type 1 dim usually, or Type 2?) User said only Customer is SCD2.
+        # Dim Policy is Type 1 (unique policy_id).
+        map_pol = sql_reader.read_query("SELECT policy_sk, policy_id FROM dim_policy")
+        
+        # Address SK Map
+        # Linked by customer_id (and postal code?)
+        map_addr = sql_reader.read_query("SELECT address_sk, customer_id, postal_code FROM dim_address")
+        
+        # Late Fee SK Map
+        map_fee = sql_reader.read_query("SELECT late_fee_sk, duration_months FROM dim_late_fee")
+        
+    except Exception as e:
+        logger.error(f"Failed to fetch dimension maps for Fact linking: {e}")
+        return
+
+    # B. Map Customer SK (SCD Type 2 Linkage)
+    # Ensure types match for merge (DB returns valid types, DF has strings)
+    # Map Cust
+    map_cust['customer_id'] = map_cust['customer_id'].astype(str)
+    
+    # Map Pol
+    map_pol['policy_id'] = map_pol['policy_id'].astype(str)
+    
+    # Map Addr
+    map_addr['customer_id'] = map_addr['customer_id'].astype(str)
+    if 'postal_code' in map_addr.columns:
+        map_addr['postal_code'] = map_addr['postal_code'].astype(str)
+        
+    # We need to match df['customer_id'] == map_cust['customer_id'] AND df['txn_date'] BETWEEN Start AND End.
+    # Merge on ID
+    df_merged = pd.merge(df, map_cust, on='customer_id', how='left')
+    
+    # Ensure Dates are datetime
+    df_merged['txn_date'] = pd.to_datetime(df_merged['txn_date'], errors='coerce')
+    df_merged['eff_start_dt'] = pd.to_datetime(df_merged['eff_start_dt'], errors='coerce')
+    
+    # Handle '9999' which breaks pd.to_datetime on some systems (Out of bounds)
+    # We force errors='coerce' so 9999 becomes NaT, then replace with Max Timestamp
+    df_merged['eff_end_dt'] = pd.to_datetime(df_merged['eff_end_dt'], errors='coerce')
+    df_merged['eff_end_dt'] = df_merged['eff_end_dt'].fillna(pd.Timestamp.max)
+    # Also handle strings if they survived
+    
+    # Filter: eff_start <= txn_date < eff_end
+    # Note: If txn_date is missing, we fail match.
+    mask = (df_merged['txn_date'] >= df_merged['eff_start_dt']) & (df_merged['txn_date'] <= df_merged['eff_end_dt'])
+    
+    # Keep only valid matches
+    # If a customer has multiple history rows, 'merge' created duplicates. 'mask' identifies the correct one.
+    # If no match found (txn before customer start?), we might get empty. Use Left Join logic carefully.
+    
+    # Better approach: Sort and drop duplicates or select valid.
+    fact_data = df_merged[mask].copy()
+    
+    # If we lost rows (no matching Time slice), we should log.
+    if len(fact_data) < len(df):
+        logger.warning(f"SCD2 Linkage: Dropped {len(df) - len(fact_data)} rows due to date mismatch. (Check txn_date vs customer history).")
+        # Optional: Recover them with 'Current' flag if robust logic needed.
+
+    # C. Map Policy SK
+    if 'policy_id' in fact_data.columns and 'policy_id' in map_pol.columns:
+        # Ensure string type matching
+        fact_data['policy_id'] = fact_data['policy_id'].astype(str)
+        
+        fact_data = pd.merge(fact_data, map_pol, on='policy_id', how='left')
+
+    # D. Map Address SK
+    # Join on Customer ID and Postal Code?
+    if 'postal_code' in fact_data.columns:
+        # Cast DF as well
+        fact_data['postal_code'] = fact_data['postal_code'].fillna('').astype(str).replace(r'\.0$', '', regex=True)
+        fact_data = pd.merge(fact_data, map_addr, on=['customer_id', 'postal_code'], how='left')
+    elif 'customer_id' in fact_data.columns:
+         # Fallback just customer
+         fact_data = pd.merge(fact_data, map_addr, on='customer_id', how='left')
+
+    # E. Map Late Fee SK
+    if 'late_duration_months' in fact_data.columns:
+        fact_data = pd.merge(fact_data, map_fee, left_on='late_duration_months', right_on='duration_months', how='left')
+
+    # F. Map Date SK (Optional/Missing in logic) - User has dim_date but we don't have usage logic. 
+    # Use 20251212 int format or lookup.
+    # Skip for now if code didn't have it. DDL has `date_sk`. We should probably supply it.
+    # Simple INT: YYYYMMDD
+    fact_data['date_sk'] = fact_data['txn_date'].dt.strftime('%Y%m%d').fillna(0).astype(int)
+
+    # G. Final Selection
+    # Needed: fact_sk (Auto), customer_sk, policy_sk, address_sk, late_fee_sk, date_sk, premium_amt, premium_paid_tilldate, total_policy_amt, late_fee, region, ingestion_date
+    final_cols = [
+        'customer_sk', 'policy_sk', 'address_sk', 'late_fee_sk', 'date_sk', 
+        'premium_amt', 'premium_paid_tilldate', 'total_policy_amt', 'late_fee', 'region', 'ingestion_date'
+    ] # Corrected 'late_fee' to match DB column name
+    
+    # Rename late_fee_amount
+    fact_data = fact_data.rename(columns={'late_fee_amount': 'late_fee'})
+    
+    # Add missing cols with NaN if merge failed
+    for c in final_cols:
+        if c not in fact_data.columns:
+            fact_data[c] = None
+
+    loader.load_to_db(fact_data[final_cols], 'fact_policy_txn', if_exists='append')
 
     logger.info("Pipeline Complete Successfully.")
 
 if __name__ == "__main__":
-    try:
-        run_pipeline(source_folder='data')
-    except Exception:
-        traceback.print_exc()
+    run_pipeline(source_folder='data')

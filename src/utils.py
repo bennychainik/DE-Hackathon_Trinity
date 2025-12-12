@@ -58,7 +58,9 @@ def get_db_connection(db_type='mysql', config=None):
 
     if db_type == 'mysql':
         # Connection string: mysql+mysqlconnector://user:password@host:port/dbname
-        conn_str = f"mysql+mysqlconnector://{user}:{password}@{host}:{port}/{db_name}"
+        from urllib.parse import quote_plus
+        encoded_pass = quote_plus(password)
+        conn_str = f"mysql+mysqlconnector://{user}:{encoded_pass}@{host}:{port}/{db_name}"
         try:
             engine = create_engine(conn_str)
             logger.info(f"Connected to MySQL database: {db_name} at {host}")
