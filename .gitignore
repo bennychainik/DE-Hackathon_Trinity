@@ -1,0 +1,24 @@
+# -- Data Engineering --
+data/
+*.csv
+*.parquet
+*.avro
+*.json
+*.xlsx
+*.zip
+logs/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.env
+.idea/
+.vscode/
+
+# -- Spark --
+metastore_db/
+derby.log
+warehouse/
+
+# -- Jupyter --
+.ipynb_checkpoints/

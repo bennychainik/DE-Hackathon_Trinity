@@ -1,0 +1,19 @@
+name: ds_hackathon
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pandas
+  - numpy
+  - scikit-learn
+  - xgboost
+  - lightgbm
+  - matplotlib
+  - seaborn
+  - shap
+  - jupyter
+  - ipykernel
+  - pip
+  - pip:
+    - -r requirements.txt

@@ -1,0 +1,20 @@
+# -- Data Processing --
+pandas
+polars
+pyspark
+duckdb
+numpy
+
+# -- Database --
+sqlalchemy
+mysql-connector-python
+pymysql
+
+# -- Data Quality & Testing --
+pytest
+great_expectations
+
+# -- Utils --
+pyyaml
+tqdm
+faker
