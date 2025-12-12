@@ -48,3 +48,24 @@ class Standardizer:
         str_cols = df.select_dtypes(include=['object']).columns
         df[str_cols] = df[str_cols].apply(lambda x: x.str.strip())
         return df
+
+    @staticmethod
+    def clean_country(df: pd.DataFrame, col: str = 'country') -> pd.DataFrame:
+        """
+        Standardizes country names.
+        Maps 'usa', 'u.s.', 'united states' -> 'USA'.
+        """
+        if col in df.columns:
+            # Normalize to lowercase for comparison
+            s = df[col].astype(str).str.lower().str.strip()
+            
+            # Map USA variations
+            # Regex could be used, but simple map/replace is often faster/safer for known set
+            # 'usa', 'u.s.', 'u.s', 'united states', 'united states of america'
+            usa_variants = ['usa', 'u.s.', 'u.s', 'united states', 'united states of america', 'us']
+            
+            # Application
+            df.loc[s.isin(usa_variants), col] = 'USA'
+            
+            logger.info(f"Standardized '{col}' column for USA variations.")
+        return df
