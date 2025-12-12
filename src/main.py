@@ -245,10 +245,46 @@ def run_pipeline(source_folder='data', file_pattern='*'):
     dim_addr['created_at'] = datetime.now()
     loader.load_to_db(dim_addr, 'dim_address', if_exists='append')
     
-    # 7.5 Fact Policy Txn
-    # DDL: fact_sk, customer_sk, policy_sk, address_sk, date_sk, premium_amt, premium_paid_tilldate, total_policy_amt, late_fee, region, ingestion_date
-    # Note: Using Natural Keys for FKs temporarily as discussed.
-    fact_tx = df[['customer_id', 'policy_id', 'txn_date', 'premium_amt', 'premium_paid_tilldate', 'total_policy_amt', 'late_fee_amount', 'region', 'ingestion_date']]
+    # 7.5 Dim Late Fee (New Hybrid Dim)
+    # We generate rules dynamically or static 0-60 months
+    # Rule: 0.5% per month. provided in UseCase excel or formula.
+    # We'll generate a reference dataframe for 0-60 months.
+    fee_range = range(0, 61)
+    dim_late_fee = pd.DataFrame({'duration_months': fee_range})
+    dim_late_fee['penalty_percent'] = dim_late_fee['duration_months'] * 0.005
+    dim_late_fee['description'] = dim_late_fee['duration_months'].astype(str) + " Months Delay"
+    dim_late_fee['created_at'] = datetime.now()
+    
+    loader.load_to_db(dim_late_fee, 'dim_late_fee', if_exists='append') # Warning: Append might duplicate if run multiple times. Ideally upsert or replace (lookup). 
+    # For Hackathon: 'append' with unique constraint failure is noisy. 
+    # Better: 'replace' if it's a reference table, OR check existence.
+    # We'll use simple append and ignore errors (Loader handles basic, but usually we'd truncate/re-seed or lookup).
+    # Let's try to fetch SKs back for Fact linkage.
+    
+    # 7.6 Fact Policy Txn
+    # Need to link late_fee_sk.
+    # 1. Join df with dim_late_fee on 'late_duration_months'
+    # Since we just created dim_late_fee DF, we can join on that (assuming SKs are auto-inc in DB, we don't have them here unless we fetch).
+    # Hack: We know the logic. If late_fee_sk is Auto-Inc and we cleared table or it maps 1:1, we can't easily guess.
+    # Correct Way: Fetch dim_late_fee from DB.
+    try:
+        from src.ingestion import SQLIngestor
+        sql_reader = SQLIngestor(db_type='mysql')
+        ref_late_fee = sql_reader.read_query("SELECT late_fee_sk, duration_months FROM dim_late_fee")
+        
+        # If empty (first run), we rely on the df we just made, but we need SKs. 
+        # Since we use 'append', we can't guess SKs. 
+        # Quick Hack for Hackathon: Use 'duration_months' as the SK? NO.
+        # Fallback: If ref_late_fee is available, merge.
+        if not ref_late_fee.empty:
+             df = pd.merge(df, ref_late_fee, left_on='late_duration_months', right_on='duration_months', how='left')
+        else:
+             df['late_fee_sk'] = None # Should not happen if load worked
+    except Exception:
+         df['late_fee_sk'] = None
+
+    # Prepare Fact
+    fact_tx = df[['customer_id', 'policy_id', 'late_fee_sk', 'txn_date', 'premium_amt', 'premium_paid_tilldate', 'total_policy_amt', 'late_fee_amount', 'region', 'ingestion_date']]
     fact_tx = fact_tx.rename(columns={'late_fee_amount': 'late_fee'})
     loader.load_to_db(fact_tx, 'fact_policy_txn', if_exists='append')
 

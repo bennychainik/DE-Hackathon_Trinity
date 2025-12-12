@@ -87,6 +87,12 @@ CREATE TABLE IF NOT EXISTS dim_customer (
   UNIQUE KEY (customer_id, eff_start_dt)
 );
 
+CREATE TABLE IF NOT EXISTS dim_policy_type (
+  policy_type_id INT PRIMARY KEY,
+  policy_type_name VARCHAR(100),
+  policy_type_desc TEXT
+);
+
 CREATE TABLE IF NOT EXISTS dim_policy (
   policy_sk INT AUTO_INCREMENT PRIMARY KEY,
   policy_id INT,
@@ -127,6 +133,7 @@ CREATE TABLE IF NOT EXISTS fact_policy_txn (
   customer_sk INT,
   policy_sk INT,
   address_sk INT,
+  late_fee_sk INT, -- Link to Late Fee Dimension
   date_sk INT,
   premium_amt DECIMAL(18,2),
   premium_paid_tilldate DECIMAL(18,2),
@@ -136,11 +143,11 @@ CREATE TABLE IF NOT EXISTS fact_policy_txn (
   ingestion_date DATETIME
 );
 
--- Late fee rate helper
-CREATE TABLE IF NOT EXISTS cfg_late_fee_rate (
-  id INT AUTO_INCREMENT PRIMARY KEY,
-  region VARCHAR(50),
-  month INT,
-  year INT,
-  late_fee_rate DECIMAL(5,4)
+-- Late Fee Dimension (Hybrid: Reference for rules)
+CREATE TABLE IF NOT EXISTS dim_late_fee (
+  late_fee_sk INT AUTO_INCREMENT PRIMARY KEY,
+  duration_months INT UNIQUE, -- Key to identifying the rule
+  penalty_percent DECIMAL(5,4), -- e.g. 0.025
+  description VARCHAR(100), -- e.g. "5 Months Delay"
+  created_at DATETIME
 );
