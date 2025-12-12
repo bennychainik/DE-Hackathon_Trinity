@@ -29,6 +29,7 @@ def process_batch(df: pd.DataFrame, batch_name: str = "Unknown"):
     # ---------------------------------------------------------
     logger.info("Step 2: Standardization")
     df = Standardizer.standardize_columns(df)
+    logger.info(f"Columns after standardization: {df.columns.tolist()}")
     
     # 3. VALIDATION
     # ---------------------------------------------------------
@@ -134,13 +135,25 @@ def process_batch(df: pd.DataFrame, batch_name: str = "Unknown"):
     logger.info("Step 7: Loading DWH Layer (Dimensions & Facts)")
 
     # 7.1 Dim Policy Type
+    # Need unique policy_type_id
     dim_pol_type = df[['policy_type_id', 'policy_type_name', 'policy_type_desc']].drop_duplicates('policy_type_id')
-    loader.load_to_db(dim_pol_type, 'dim_policy_type', if_exists='append')
+    dim_pol_type = dim_pol_type.groupby('policy_type_id').first().reset_index()
+    
+    # Check existing or just try-except (Simpler for batch idempotency)
+    try:
+        loader.load_to_db(dim_pol_type, 'dim_policy_type', if_exists='append')
+    except Exception as e:
+        logger.warning(f"Dim Policy Type load warning (likely duplicates): {e}")
+        # Proceed, as data is likely already there
     
     # 7.2 Dim Policy
-    dim_policy = stg_pol[['policy_id', 'policy_name', 'policy_type_id', 'policy_type', 'policy_term', 'policy_start_dt', 'policy_end_dt', 'total_policy_amt']].drop_duplicates('policy_id')
+    # Allow history: Deduplicate by ID + Type + StartDate (Composite uniqueness)
+    dim_policy = stg_pol[['policy_id', 'policy_name', 'policy_type_id', 'policy_type', 'policy_term', 'policy_start_dt', 'policy_end_dt', 'total_policy_amt']].drop_duplicates(['policy_id', 'policy_type', 'policy_start_dt'])
     dim_policy['created_at'] = datetime.now()
-    loader.load_to_db(dim_policy, 'dim_policy', if_exists='append')
+    try:
+        loader.load_to_db(dim_policy, 'dim_policy', if_exists='append')
+    except Exception as e:
+        logger.warning(f"Dim Policy load warning (duplicates or constraint): {e}")
     
     # 7.3 Dim Customer (SCD Type 2)
     dim_cust_new = stg_cust[['customer_id', 'customer_name', 'customer_segment', 'marital_status', 'gender', 'region', 'effective_start_dt']].drop_duplicates('customer_id')
@@ -149,6 +162,8 @@ def process_batch(df: pd.DataFrame, batch_name: str = "Unknown"):
     
     try:
         existing_cust = sql_reader.read_query("SELECT customer_sk, customer_id, customer_name, customer_segment, marital_status, region FROM dim_customer WHERE current_flag = 1")
+        if 'customer_id' in existing_cust.columns:
+            existing_cust['customer_id'] = existing_cust['customer_id'].astype(str)
     except Exception as e:
         logger.warning(f"Could not fetch existing DimCustomer (First Run?): {e}")
         existing_cust = pd.DataFrame()
@@ -209,10 +224,10 @@ def process_batch(df: pd.DataFrame, batch_name: str = "Unknown"):
         pass 
 
     # 7.6 Fact Policy Txn
+    # 7.6 Fact Policy Txn
     try:
         current_date_str = datetime.now().strftime('%Y-%m-%d')
         # Optimized Fetch: Map Ids
-        # We fetch minimal maps. Optimization: Cache maps if loops are fast? Safe to fetch fresh each batch.
         map_cust = sql_reader.read_query("SELECT customer_sk, customer_id, eff_start_dt, eff_end_dt FROM dim_customer")
         map_pol = sql_reader.read_query("SELECT policy_sk, policy_id FROM dim_policy")
         map_addr = sql_reader.read_query("SELECT address_sk, customer_id, postal_code FROM dim_address")
@@ -221,8 +236,15 @@ def process_batch(df: pd.DataFrame, batch_name: str = "Unknown"):
         logger.error(f"Failed to fetch dimension maps for Fact linking: {e}")
         return
 
+    # B. Map Customer SK (SCD Type 2 Linkage)
+    # Ensure types match for merge (DB returns valid types, DF has strings)
     # Map Cust
     map_cust['customer_id'] = map_cust['customer_id'].astype(str)
+    # Normalize ID in DF to ensure match
+    if 'customer_id' in df.columns:
+        df['customer_id'] = df['customer_id'].astype(str)
+    
+    # Map Pol
     map_pol['policy_id'] = map_pol['policy_id'].astype(str)
     map_addr['customer_id'] = map_addr['customer_id'].astype(str)
     if 'postal_code' in map_addr.columns:

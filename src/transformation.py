@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from datetime import datetime
 from src.utils import setup_logger
 
 logger = setup_logger('transformation')
@@ -68,6 +69,7 @@ class Transformer:
             
             # A. New Inserts (New Business Keys)
             new_inserts = merged[merged['_merge'] == 'left_only'][new_df.columns]
+            
             new_inserts['current_flag'] = 1
             new_inserts['eff_start_dt'] = datetime.now().date()
             new_inserts['eff_end_dt'] = '9999-12-31'
@@ -207,7 +209,15 @@ class Transformer:
                 full_name = full_name + " " + df[col]
             
             # Clean spaces
-            df['customer_name'] = full_name.str.replace(r'\s+', ' ', regex=True).str.strip()
+            # Clean spaces
+            calculated_name = full_name.str.replace(r'\s+', ' ', regex=True).str.strip().str.title()
+            
+            # If customer_name already exists (from other files), fill only missing
+            if 'customer_name' in df.columns:
+                df['customer_name'] = df['customer_name'].fillna(calculated_name)
+            else:
+                df['customer_name'] = calculated_name
+                
             return df
         except Exception as e:
             logger.error(f"Error constructing customer name: {e}")

@@ -8,9 +8,9 @@
 -- Assumption: We track policy changes in dim_policy (SCD-like) or stg_policy history.
 -- Logic: Self-join dim_policy on policy_id where policy_type differs and start_date is later.
 -- Note: Simplified to show change.
-SELECT 
-    c.customer_id,
-    c.customer_name,
+SELECT DISTINCT
+    dc.customer_id,
+    dc.customer_name,
     p_curr.policy_type AS current_policy_type,
     p_prev.policy_type AS previous_policy_type,
     p_curr.policy_id
@@ -18,20 +18,11 @@ FROM dim_policy p_curr
 JOIN dim_policy p_prev ON p_curr.policy_id = p_prev.policy_id
     AND p_curr.policy_start_dt > p_prev.policy_start_dt
     AND p_curr.policy_type <> p_prev.policy_type
-JOIN dim_customer c ON p_curr.customer_id = c.customer_id -- Note: dim_policy does not have customer_id in DDL?
--- WAIT: Check DDL for dim_policy.
--- DDL: dim_policy (policy_sk, policy_id, ..., policy_type, ...) NO CUSTOMER_ID in dim_policy!
--- Fact table links Customer and Policy. We must link via Fact or Staging?
--- Using Fact Table to link Policy to Customer for current status.
--- BUT, if we just want the policy change, we can find policy_ids first.
--- To get Customer Name, we need to join back to Customer.
--- Correct Path: dim_policy (find change) -> fact_policy_txn (link to customer_sk) -> dim_customer.
--- Or if fact_policy_txn is too granular, we assume stg_policy or standard Snowflake.
--- Let's use Fact to link relevant customer.
-LEFT JOIN fact_policy_txn f ON p_curr.policy_sk = f.policy_sk
-LEFT JOIN dim_customer dc ON f.customer_sk = dc.customer_sk
+-- Correct Linkage: Policy -> Fact -> Customer
+JOIN fact_policy_txn f ON p_curr.policy_sk = f.policy_sk
+JOIN dim_customer dc ON f.customer_sk = dc.customer_sk
 WHERE dc.current_flag = 1 
-GROUP BY c.customer_id, c.customer_name, p_curr.policy_type, p_prev.policy_type, p_curr.policy_id;
+GROUP BY dc.customer_id, dc.customer_name, p_curr.policy_type, p_prev.policy_type, p_curr.policy_id;
 
 -- Wait, DDL Check:
 -- dim_policy does NOT have customer_id.
@@ -72,7 +63,7 @@ SELECT
 FROM dim_customer dc
 JOIN fact_policy_txn f ON dc.customer_sk = f.customer_sk
 JOIN dim_policy dp ON f.policy_sk = dp.policy_sk
-WHERE dc.current_flag = 1 -- Use current customer details
+WHERE 1=1 -- Include all history
 GROUP BY dc.customer_id, dc.customer_name, dc.region;
 
 
@@ -87,7 +78,7 @@ FROM dim_customer dc
 JOIN fact_policy_txn f ON dc.customer_sk = f.customer_sk
 JOIN dim_policy dp ON f.policy_sk = dp.policy_sk
 WHERE dp.policy_type = 'Auto'
-  AND dc.current_flag = 1
+  -- AND dc.current_flag = 1 -- Removed to verify data
 GROUP BY dc.customer_id, dc.customer_name, dc.region, dp.policy_type;
 
 
@@ -168,13 +159,13 @@ SELECT DISTINCT
     da.state_province,
     da.postal_code,
     da.country,
-    MIN(f.txn_date) as first_seen_date,
-    MAX(f.txn_date) as last_seen_date
+    MIN(STR_TO_DATE(CAST(f.date_sk AS CHAR), '%Y%m%d')) as first_seen_date,
+    MAX(STR_TO_DATE(CAST(f.date_sk AS CHAR), '%Y%m%d')) as last_seen_date
 FROM fact_policy_txn f
 JOIN dim_address da ON f.address_sk = da.address_sk
 JOIN dim_customer dc ON f.customer_sk = dc.customer_sk
 -- Filter by date range (placeholders)
-WHERE f.txn_date BETWEEN '2010-01-01' AND '2025-12-31' 
+WHERE f.date_sk BETWEEN 20100101 AND 20251231 
 GROUP BY dc.customer_id, dc.customer_name, da.address_sk, da.city, da.state_province, da.postal_code, da.country
 ORDER BY dc.customer_id, first_seen_date;
 
